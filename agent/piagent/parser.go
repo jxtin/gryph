@@ -113,7 +113,7 @@ func (a *Adapter) parseToolCall(sessionID uuid.UUID, agentSessionID string, base
 	event.WorkingDirectory = input.Cwd
 	event.RawEvent = rawData
 
-	if err := a.buildPayload(event, actionType, input.ToolName, input.Input, nil); err != nil {
+	if err := a.buildPayload(event, actionType, input.ToolName, input.Input); err != nil {
 		return nil, fmt.Errorf("failed to build payload: %w", err)
 	}
 
@@ -204,7 +204,7 @@ func getActionType(toolName string) events.ActionType {
 	return events.ActionToolUse
 }
 
-func (a *Adapter) buildPayload(event *events.Event, actionType events.ActionType, toolName string, toolInput, toolResponse map[string]interface{}) error {
+func (a *Adapter) buildPayload(event *events.Event, actionType events.ActionType, toolName string, toolInput map[string]interface{}) error {
 	switch actionType {
 	case events.ActionFileRead:
 		payload := events.FileReadPayload{}
@@ -239,14 +239,23 @@ func (a *Adapter) buildPayload(event *events.Event, actionType events.ActionType
 			}
 		}
 
+		// Line counting paths:
+		// 1. Edit (oldText/newText set): diff old vs new
+		// 2. Write to existing file, non-empty content: diff old file vs new content
+		// 3. Write to existing file, empty content: count old lines as removed
+		// 4. Write new file: count new lines
+		// Paths 3/4 use CountNewFileLines to avoid SplitLines("") phantom line bug
 		if fullOldStr != "" || fullNewStr != "" {
 			payload.LinesAdded, payload.LinesRemoved = utils.CountDiffLines(fullOldStr, fullNewStr)
 		} else if filePath != "" {
 			if data, err := os.ReadFile(filePath); err == nil {
-				// File exists — diff old content against new for overwrite tracking
-				payload.LinesAdded, payload.LinesRemoved = utils.CountDiffLines(string(data), fullContent)
+				oldContent := string(data)
+				if fullContent == "" {
+					payload.LinesRemoved = utils.CountNewFileLines(oldContent)
+				} else {
+					payload.LinesAdded, payload.LinesRemoved = utils.CountDiffLines(oldContent, fullContent)
+				}
 			} else if fullContent != "" {
-				// New file — no old content to diff against
 				payload.LinesAdded = utils.CountNewFileLines(fullContent)
 			}
 		} else if fullContent != "" {
@@ -291,15 +300,6 @@ func (a *Adapter) buildPayload(event *events.Event, actionType events.ActionType
 		if desc, ok := toolInput["description"].(string); ok {
 			payload.Description = desc
 		}
-		if toolResponse != nil {
-			if content, ok := toolResponse["content"].([]interface{}); ok && len(content) > 0 {
-				if textContent, ok := content[0].(map[string]interface{}); ok {
-					if text, ok := textContent["text"].(string); ok {
-						payload.Output = truncateString(text, 500)
-					}
-				}
-			}
-		}
 		if err := event.SetPayload(payload); err != nil {
 			return fmt.Errorf("failed to set payload: %w", err)
 		}
@@ -310,11 +310,6 @@ func (a *Adapter) buildPayload(event *events.Event, actionType events.ActionType
 		}
 		if input, err := json.Marshal(toolInput); err == nil {
 			payload.Input = input
-		}
-		if toolResponse != nil {
-			if resp, err := json.Marshal(toolResponse); err == nil {
-				payload.Output = resp
-			}
 		}
 		if err := event.SetPayload(payload); err != nil {
 			return fmt.Errorf("failed to set payload: %w", err)
