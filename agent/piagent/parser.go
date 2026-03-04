@@ -135,10 +135,9 @@ func (a *Adapter) parseToolResult(sessionID uuid.UUID, agentSessionID string, ba
 	if input.IsError {
 		event.ResultStatus = events.ResultError
 	}
-
-	// Build minimal payload based on action type
-	// For file_write and file_read: tool_call already captured the details, just mark success
-	// For command exec: capture the output
+	// Build minimal payload based on action type.
+	// For file_write, file_read, and command exec, the detailed handling of
+	// content and metadata is performed inside buildPayloadForResult.
 	toolResponse := make(map[string]interface{})
 	toolResponse["content"] = input.Content
 	toolResponse["is_error"] = input.IsError
